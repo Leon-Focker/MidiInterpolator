@@ -1,52 +1,64 @@
-use nih_plug::prelude::*;
-use nih_plug_iced::IcedState;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use nih_plug::prelude::*;
+use vizia_plug::ViziaState;
+use nih_plug::prelude::SmoothingStyle::Linear;
 
 mod editor;
-
-/// This is mostly identical to the gain example, minus some fluff, and with a GUI.
-struct BitFiddler {
-    params: Arc<BitFiddlerParams>,
-}
+mod gui;
 
 #[derive(Params)]
-struct BitFiddlerParams {
+pub struct MidiInterpolatorParams {
     /// The editor state, saved together with the parameter state so the custom scaling can be
     /// restored.
     #[persist = "editor-state"]
-    editor_state: Arc<IcedState>,
+    pub editor_state: Arc<ViziaState>,
 
-    #[id = "bit_selector"]
-    pub bit_selector: IntParam,
+    // Interpolate between A and B
+    #[id = "interpolate_a_b"]
+    pub interpolate_a_b: FloatParam,
+
+    pub channel_a: Arc<AtomicUsize>,
+
+    pub channel_b: Arc<AtomicUsize>,
+    //pub channel_b: EnumParam<MidiChannel>,
 }
 
-impl Default for BitFiddler {
+impl Default for MidiInterpolatorParams {
     fn default() -> Self {
-        let default_params = Arc::new(BitFiddlerParams::default());
+        Self {
+            editor_state: editor::default_state(),
+
+            interpolate_a_b: FloatParam::new(
+                "Interpolate between Input 1 and 2",
+                0.5,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+                .with_smoother(Linear(50.0)),
+
+            //channel_a: EnumParam::new("Channel A", MidiChannel::Channel1),
+            channel_a: Arc::new(AtomicUsize::new(1)),
+
+            channel_b: Arc::new(AtomicUsize::new(2)),
+        }
+    }
+}
+
+struct MidiInterpolator {
+    params: Arc<MidiInterpolatorParams>,
+}
+
+impl Default for MidiInterpolator {
+    fn default() -> Self {
+        let default_params = Arc::new(MidiInterpolatorParams::default());
         Self {
             params: default_params.clone(),
         }
     }
 }
 
-impl Default for BitFiddlerParams {
-    fn default() -> Self {
-        Self {
-            editor_state: editor::default_state(),
-
-            // Select which bit to flip
-            bit_selector: IntParam::new(
-                "Bit Selection",
-                0,
-                // Is there a way/necessity to not hardcode the 31?
-                IntRange::Linear { min: 0, max: 31},
-            )
-        }
-    }
-}
-
-impl Plugin for BitFiddler {
-    const NAME: &'static str = "BitFiddler";
+impl Plugin for MidiInterpolator {
+    const NAME: &'static str = "MidiInterpolator";
     const VENDOR: &'static str = "Leon Focker";
     const URL: &'static str = "https://youtu.be/dQw4w9WgXcQ";
     const EMAIL: &'static str = "contact@leonfocker.de";
@@ -54,18 +66,10 @@ impl Plugin for BitFiddler {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        },
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(1),
-            main_output_channels: NonZeroU32::new(1),
-            ..AudioIOLayout::const_default()
-        },
     ];
-
+    
+    const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
+    const MIDI_OUTPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type SysExMessage = ();
@@ -93,30 +97,30 @@ impl Plugin for BitFiddler {
 
     fn process(
         &mut self,
-        buffer: &mut Buffer,
+        _buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        for channel_samples in buffer.iter_samples() {
 
-            let bit_selector: usize = self.params.bit_selector.value() as usize;
+        // handle all incoming events
+        while let Some(event) = context.next_event() {
 
-            for sample in channel_samples {
-                // transmute the sample into byte representation
-                let mut bytes = sample.to_be_bytes();
-                // flip one bit by applying a bitmask and xor
-                bytes[bit_selector / 8] ^= 1 << 7 - (bit_selector % 8);
-                // transmute back to a float and set new sample
-                *sample = f32::from_bits(u32::from_be_bytes(bytes));
+            match event {
+                NoteEvent::NoteOn {..} => {
+                },
+                NoteEvent::NoteOff {..} => {
+
+                },
+                _ => context.send_event(event),
             }
         }
-
+        
         ProcessStatus::Normal
     }
 }
 
-impl ClapPlugin for BitFiddler {
-    const CLAP_ID: &'static str = "leonfocker.bitfiddler";
+impl ClapPlugin for MidiInterpolator {
+    const CLAP_ID: &'static str = "leonfocker.midiinterpolator";
     const CLAP_DESCRIPTION: Option<&'static str> = Some("A simple distortion plugin flipping one bit of every sample");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
@@ -128,11 +132,11 @@ impl ClapPlugin for BitFiddler {
     ];
 }
 
-impl Vst3Plugin for BitFiddler {
-    const VST3_CLASS_ID: [u8; 16] = *b"BitfiddlerAAaAAa";
+impl Vst3Plugin for MidiInterpolator {
+    const VST3_CLASS_ID: [u8; 16] = *b"MidiInterpolator";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
         &[Vst3SubCategory::Fx, Vst3SubCategory::Tools];
 }
 
-nih_export_clap!(BitFiddler);
-nih_export_vst3!(BitFiddler);
+nih_export_clap!(MidiInterpolator);
+nih_export_vst3!(MidiInterpolator);
