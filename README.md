@@ -1,6 +1,6 @@
 # MidiInterpolator
 
-MidiInterpolator is a MIDI event processing plugin that can interpolate between Notes of two Midi Channels.
+MidiInterpolator is a MIDI event processing plugin that can interpolate between the Pitch and Velocity of Notes between two Midi Channels.
 
 ## Building
 
