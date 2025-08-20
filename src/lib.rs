@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+use std::ops::Rem;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::SeqCst;
 use nih_plug::prelude::*;
 use vizia_plug::ViziaState;
 use nih_plug::prelude::SmoothingStyle::Linear;
@@ -57,6 +60,69 @@ impl Default for MidiInterpolator {
     }
 }
 
+#[derive(Default)]
+struct NoteAverage {
+    cnt_a: u8,
+    cnt_b: u8,
+    note_a: u8,
+    note_b: u8,
+    velo_a: f32,
+    velo_b: f32,
+}
+
+impl NoteAverage {
+    fn return_event(&mut self, interp: f32, timing: u32, channel: u8) -> Option<PluginNoteEvent<MidiInterpolator>> {
+        if self.cnt_a > 0 || self.cnt_b > 0 {
+            if self.cnt_a > 0 {
+                self.velo_a = self.velo_a / self.cnt_a as f32;
+                self.note_a = self.note_a / self.cnt_a;
+            } else {
+                self.note_a = self.note_b / self.cnt_b;
+            }
+            if self.cnt_b > 0 {
+                self.velo_b = self.velo_b / self.cnt_b as f32;
+                self.note_b = self.note_b / self.cnt_b;
+            } else {
+                self.note_b = self.note_a;
+            }
+
+            let new_note = self.note_a as f32 * (1.0 - interp) + self.note_b as f32 * interp;
+            let new_velo = self.velo_a * (1.0 - interp) + self.velo_b * interp;
+            //dbg!(new_velo);
+            //dbg!(new_note);
+
+            // reset tmps
+            self.cnt_a = 0;
+            self.note_a = 0;
+            self.velo_a = 0.0;
+            self.cnt_b = 0;
+            self.note_b = 0;
+            self.velo_b = 0.0;
+
+            // return average Note
+            Some(NoteEvent::NoteOn {
+                timing,
+                voice_id: None,
+                channel,
+                note: new_note.round() as u8,
+                velocity: new_velo,
+            })
+        } else { None }
+    }
+
+    fn advance_a(&mut self, note: u8, velocity: f32) -> () {
+        self.cnt_a += 1;
+        self.note_a += note;
+        self.velo_a += velocity;
+    }
+
+    fn advance_b(&mut self, note: u8, velocity: f32) -> () {
+        self.cnt_b += 1;
+        self.note_b += note;
+        self.velo_b += velocity;
+    }
+}
+
 impl Plugin for MidiInterpolator {
     const NAME: &'static str = "MidiInterpolator";
     const VENDOR: &'static str = "Leon Focker";
@@ -101,27 +167,56 @@ impl Plugin for MidiInterpolator {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        // TODO this doesn't handle durations (noteoffs), NoteOffs are sent even if the corresponding On wasn't
 
-        // handle all incoming events
+        let interp = self.params.interpolate_a_b.value(); // TODO get this here?
+        let chan_a = self.params.channel_a.load(SeqCst) - 1;
+        let chan_b = self.params.channel_b.load(SeqCst) - 1;
+        let mut note_average = NoteAverage::default();
+        let mut last_timing = 0;
+
         while let Some(event) = context.next_event() {
-
             match event {
-                NoteEvent::NoteOn {..} => {
-                },
-                NoteEvent::NoteOff {..} => {
+                NoteEvent::NoteOn {
+                    timing,
+                    channel,
+                    note,
+                    velocity,
+                    ..
+                } => {
+                    // If this note is not at the same time as the last, return last notes average
+                    if timing > last_timing {
+                       if let Some(event) = note_average.return_event(interp, timing, channel) {
+                           context.send_event(event);
+                       }
+                    }
+                    last_timing = timing;
 
+                    // Increase Average by this note
+                    if channel as usize == chan_a {
+                        note_average.advance_a(note, velocity);
+                    } else if channel as usize == chan_b {
+                        note_average.advance_b(note, velocity);
+                    } else {
+                        context.send_event(event);
+                    }
                 },
                 _ => context.send_event(event),
             }
         }
-        
+
+        // get the last event out if necessary
+        if let Some(event) = note_average.return_event(interp, last_timing, chan_a as u8) {
+            context.send_event(event);
+        }
+
         ProcessStatus::Normal
     }
 }
 
 impl ClapPlugin for MidiInterpolator {
     const CLAP_ID: &'static str = "leonfocker.midiinterpolator";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("A simple distortion plugin flipping one bit of every sample");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
