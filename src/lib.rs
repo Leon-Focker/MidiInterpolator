@@ -168,6 +168,7 @@ impl Plugin for MidiInterpolator {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // TODO this doesn't handle durations (noteoffs), NoteOffs are sent even if the corresponding On wasn't
+        // TODO change channel of output to note that has a Noteoff! Else notes sustend
 
         let interp = self.params.interpolate_a_b.value(); // TODO get this here?
         let chan_a = self.params.channel_a.load(SeqCst) - 1;
